@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日比谷線 車掌シミュ（試作）</title>
+<style>
+:root{--bg:#0e1116;--panel:#171c24;--line:#2a3240;--text:#e6e9ef;--sub:#9aa4b2;--ok:#3ecf6e;--warn:#ffb020;--ng:#ff4d4f;--hibiya:#9caeb7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:12px 16px}
+h1{font-size:16px;margin:0 0 8px;color:var(--sub);font-weight:600}
+.hud{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:8px}
+.hud div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.hud small{display:block;color:var(--sub);font-size:11px}
+.hud b{font-size:18px;font-variant-numeric:tabular-nums}
+canvas{width:100%;display:block;background:#05070a;border-radius:10px;border:1px solid var(--line)}
+.lamps{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
+.lamp{padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--sub);font-size:13px;background:var(--panel)}
+.lamp.on{color:#111;background:var(--ok);border-color:var(--ok)}
+.lamp.warn{color:#111;background:var(--warn);border-color:var(--warn)}
+.lamp.ng{color:#fff;background:var(--ng);border-color:var(--ng)}
+.msg{min-height:46px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:15px}
+.msg.ng{border-color:var(--ng);color:#ffd6d6}.msg.ok{border-color:var(--ok)}
+.controls{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+button{font:inherit;padding:12px 6px;border-radius:8px;border:1px solid var(--line);background:#222a36;color:var(--text);cursor:pointer;touch-action:manipulation}
+button:active{transform:translateY(1px);background:#2c3646}
+button kbd{display:block;font-size:11px;color:var(--sub);font-family:inherit}
+button.red{background:#5a1d1f;border-color:#8a2b2e}
+button.main{background:#2b4a36;border-color:#3e6b4e}
+.log{margin-top:8px;font-size:13px;color:var(--sub);max-height:130px;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.log .ng{color:var(--ng)}.log .ok{color:var(--ok)}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;max-width:580px;width:100%;max-height:90vh;overflow:auto}
+.card h2{margin:0 0 10px}
+.card p,.card li{color:var(--sub);line-height:1.7;font-size:14px}
+.card table{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0}
+.card td{padding:4px 0;border-bottom:1px solid var(--line)}
+.card td:last-child{text-align:right}
+.rank{font-size:48px;font-weight:800}
+.note{font-size:12px;color:var(--sub);margin-top:10px}
+.hidden{display:none}
+@media(max-width:640px){.hud{grid-template-columns:repeat(3,1fr)}.controls{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>東京メトロ日比谷線 車掌シミュレーター（非公式・試作版）</h1>
+  <div class="hud">
+    <div><small>現在時刻</small><b id="hTime">--:--:--</b></div>
+    <div><small id="hStaLabel">停車中</small><b id="hSta">-</b></div>
+    <div><small>速度</small><b id="hSpeed">0 km/h</b></div>
+    <div><small>遅れ</small><b id="hDelay">±0秒</b></div>
+    <div><small>得点</small><b id="hScore">100</b></div>
+  </div>
+  <canvas id="cv" width="960" height="420"></canvas>
+  <div class="lamps">
+    <span class="lamp" id="lStop">停止位置</span>
+    <span class="lamp" id="lSide">車側灯</span>
+    <span class="lamp" id="lBell">発車ベル</span>
+    <span class="lamp" id="lDep">発車時刻</span>
+    <span class="lamp" id="lEmg">非常</span>
+  </div>
+  <div class="msg" id="msg">「乗務開始」を押してください。</div>
+  <div class="controls">
+    <button id="bA">車内放送<kbd>A</kbd></button>
+    <button id="bQ">左扉 開<kbd>Q</kbd></button>
+    <button id="bE">右扉 開<kbd>E</kbd></button>
+    <button id="bS">戸閉め<kbd>S</kbd></button>
+    <button id="bR">再開閉<kbd>R</kbd></button>
+    <button id="bB" class="main">出発合図ブザー<kbd>B</kbd></button>
+    <button id="bF">早送り（押す間）<kbd>F</kbd></button>
+    <button id="bX" class="red">非常ブレーキ<kbd>X</kbd></button>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<div class="overlay" id="start">
+  <div class="card">
+    <h2>乗務開始前の確認</h2>
+    <p>行路：中目黒 → 恵比寿 → 広尾（北千住行き）<br>あなたは最後尾の車掌です。</p>
+    <ul>
+      <li>駅に近づいたら <b>A</b> で到着放送</li>
+      <li>停車して「停止位置」が点いたら、ホーム側の扉を開ける（左 <b>Q</b> / 右 <b>E</b>）</li>
+      <li>発車ベルが鳴り、乗降が終わったら <b>S</b> で戸閉め</li>
+      <li>駆け込みで挟まったら <b>R</b> で再開閉</li>
+      <li>車側灯が全部消えたのを確認して、発車時刻に <b>B</b> で出発合図</li>
+      <li>発車直後のホームで異常があれば <b>X</b> で非常ブレーキ</li>
+    </ul>
+    <p>早発・逆側開扉・確認前の操作は大きく減点されます。</p>
+    <button class="main" id="go" style="width:100%">乗務開始</button>
+    <div class="note">非公式のファンメイド作品です。東京地下鉄株式会社とは関係ありません。駅データ・時刻は仮のものです。</div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="result">
+  <div class="card" id="resultCard"></div>
+</div>
+
+<script>
+/* ===== データ（あとでスプレッドシートから読み込む部分） =====
+   side: 'L' = 進行方向左側が開く / 'R' = 右側（※仮データ。実際の駅で要確認）
+   pax : ホームで待つ人数の範囲（1ドアあたりの最大値） */
+const DATA = {
+  trainNo: '1000S',
+  dest: '北千住',
+  stations: [
+    { code:'H01', name:'中目黒', side:'L', transfer:'東急東横線', dep:'10:00:30', pax:4 },
+    { code:'H02', name:'恵比寿', side:'R', transfer:'JR線',       arr:'10:02:20', dep:'10:02:50', pax:5 },
+    { code:'H03', name:'広尾',   side:'L', transfer:'',           arr:'10:04:30', pax:3 }
+  ]
+};
+
+/* ===== 定数 ===== */
+const W = 960, H = 420;
+const CARS = 7, CAR_W = 116, GAP = 4, X0 = 60;
+const TRAIN_Y = 182, TRAIN_H = 56;
+const DOORS = [];
+for (let c = 0; c < CARS; c++) for (let d = 0; d < 4; d++) DOORS.push(X0 + c*(CAR_W+GAP) + CAR_W*(0.125 + 0.25*d));
+const ACCEL_T = 14, DECEL_T = 16, VMAX = 75;
+const BELL_BEFORE = 20, BELL_LEN = 8;
+
+const sec = s => { const [h,m,x] = s.split(':').map(Number); return h*3600 + m*60 + x; };
+const fmt = t => { t = Math.floor(t); const h = Math.floor(t/3600), m = Math.floor(t%3600/60), s = t%60; return [h,m,s].map(v=>String(v).padStart(2,'0')).join(':'); };
+DATA.stations.forEach(s => { if (s.arr) s.arrT = sec(s.arr); if (s.dep) s.depT = sec(s.dep); });
+
+/* ===== 音 ===== */
+let AC = null;
+function tone(f, dur, type='sine', vol=0.15, when=0){
+  if (!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain(), t0 = AC.currentTime + when;
+  o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const sndBuzzer = () => tone(520, 0.7, 'square', 0.07);
+const sndChime  = () => { tone(880, 0.5); tone(700, 0.8, 'sine', 0.15, 0.45); };
+const sndBell   = () => { for (let i = 0; i < BELL_LEN*5; i++) tone(i%2 ? 1180 : 1000, 0.2, 'triangle', 0.04, i*0.2); };
+const sndAlarm  = () => { for (let i = 0; i < 6; i++) tone(i%2 ? 900 : 650, 0.25, 'sawtooth', 0.05, i*0.25); };
+function speak(text){
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.rate = 1.05;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+
+/* ===== 状態 ===== */
+const S = {
+  t: 0, i: 0, phase: 'IDLE', doors: 0, doorTarget: 0,
+  okAt: null, openedAt: null, score: 100, deductions: [], flags: new Set(),
+  motionT: 0, segDur: 0, haltUntil: 0, announced: false, emergPlan: null, emerg: null,
+  bellStart: null, queues: [], boardAcc: 0, runner: null, trapped: false,
+  readyAt: null, delays: [], ff: false, speed: 0, tunnelOff: 0, finishAt: null
+};
+const st = () => DATA.stations[S.i];
+const next = () => DATA.stations[S.i + 1];
+
+/* ===== 表示ヘルパー ===== */
+const $ = id => document.getElementById(id);
+function setMsg(text, cls=''){ const m = $('msg'); m.textContent = text; m.className = 'msg ' + cls; }
+function log(text, cls=''){ const d = document.createElement('div'); d.className = cls; d.textContent = `[${fmt(S.t)}] ${text}`; $('log').prepend(d); }
+function deduct(key, pts, text){
+  const k = key + '@' + S.i;
+  if (S.flags.has(k)) return;
+  S.flags.add(k); S.score = Math.max(0, S.score - pts);
+  S.deductions.push({ sta: st().name, text, pts });
+  log(`減点 -${pts}：${text}`, 'ng'); setMsg(`⚠ ${text}（-${pts}）`, 'ng');
+}
+
+/* ===== 駅に着いたとき ===== */
+function setupQueues(){
+  const max = st().pax || 3;
+  S.queues = DOORS.map(() => Math.random() < 0.75 ? 1 + Math.floor(Math.random()*max) : 0);
+  S.boardAcc = 0;
+}
+function arrive(){
+  S.i++;
+  S.phase = 'ARRIVED'; S.speed = 0;
+  if (!S.announced) deduct('noAnn', 5, '到着放送なし');
+  S.okAt = S.t + 1.5; S.openedAt = null; S.bellStart = null; S.runner = null; S.trapped = false;
+  setupQueues();
+  log(`${st().name}に到着（定刻 ${st().arr}）`);
+  if (S.phase === 'ARRIVED') setMsg(`${st().name}に停車。停止位置の確認を待ってください。`);
+  // 駆け込み乗車を予約（終点以外）
+  if (st().depT && Math.random() < 0.65){
+    const door = Math.floor(Math.random()*DOORS.length);
+    S.runner = { door, start: st().depT - 7 + Math.random()*4, state: 'wait', boardT: 0 };
+  }
+}
+
+/* ===== 出発 ===== */
+function depart(){
+  const delay = Math.max(0, Math.round(S.t - st().depT));
+  S.delays.push({ sta: st().name, delay });
+  if (delay >= 10) deduct('late', Math.min(10, Math.floor(delay/10)*2), `発車遅れ ${delay}秒`);
+  log(`${st().name}を発車（遅れ ${delay}秒）`, delay < 10 ? 'ok' : '');
+  S.segDur = next().arrT - st().depT;
+  S.motionT = 0; S.announced = false; S.phase = 'MOVING'; S.okAt = null;
+  S.emergPlan = Math.random() < 0.3 ? 2 + Math.random()*5 : null; S.emerg = null;
+  setMsg('発車。ホームを抜けるまで監視してください。');
+}
+
+/* ===== 操作 ===== */
+function inApproach(){ return S.phase === 'MOVING' && S.motionT >= S.segDur - 38 && S.motionT <= S.segDur - 3; }
+function cmd(c){
+  if (S.phase === 'IDLE' || S.phase === 'FINISHED') return;
+  switch (c){
+    case 'A': {
+      if (S.phase === 'MOVING'){
+        if (S.announced) return;
+        const n = next();
+        if (inApproach()){
+          S.announced = true;
+          const text = `まもなく、${n.name}です。お出口は${n.side==='L'?'左側':'右側'}です。${n.transfer ? n.transfer + 'はお乗り換えです。' : ''}`;
+          speak(text); log(`到着放送：${text}`, 'ok'); setMsg(`📢 ${text}`, 'ok');
+        } else if (S.motionT < S.segDur - 38){
+          deduct('annEarly', 2, '到着放送が早すぎ');
+        }
+      } else {
+        const text = `この電車は、日比谷線、${DATA.dest}行きです。`;
+        speak(text); log(`案内放送：${text}`);
+      }
+      break;
+    }
+    case 'Q': case 'E': {
+      const side = c === 'Q' ? 'L' : 'R';
+      if (S.phase === 'MOVING' || S.phase === 'ARRIVED'){ deduct('openEarly', 20, '停止位置確認前の開扉操作'); return; }
+      if (S.phase !== 'STOPPED') return;
+      if (side !== st().side){ deduct('wrongSide', 30, '逆側の扉を開けようとした'); return; }
+      S.phase = 'OPEN'; S.doorTarget = 1; S.openedAt = S.t;
+      if (S.t - S.okAt > 5) deduct('openLate', 2, '開扉が遅い');
+      log(`${side==='L'?'左':'右'}側の扉を開扉`, 'ok'); setMsg('乗降中。発車ベルのあと、乗降が終わったら戸閉め。');
+      if (!st().depT) S.finishAt = S.t + 2.5;
+      break;
+    }
+    case 'S': {
+      if (S.phase !== 'OPEN') return;
+      if (!S.bellStart) deduct('closeEarly', 3, '発車ベル前の戸閉め');
+      if (S.queues.some(q => q > 0)) deduct('closeBoarding', 5, '乗降が終わる前の戸閉め');
+      S.phase = 'CLOSING'; S.doorTarget = 0; sndChime();
+      log('戸閉め'); setMsg('戸閉め中…車側灯の消灯を確認。');
+      break;
+    }
+    case 'R': {
+      if (S.phase !== 'CLOSING' && S.phase !== 'CLOSED') return;
+      S.phase = 'OPEN'; S.doorTarget = 1;
+      if (S.trapped){ S.trapped = false; log('再開閉で挟まりを解消', 'ok'); setMsg('再開閉。乗車を確認したら、もう一度戸閉め。', 'ok'); }
+      else log('再開閉');
+      break;
+    }
+    case 'B': {
+      if (S.phase === 'OPEN' || S.phase === 'CLOSING'){ deduct('buzzOpen', 10, '戸閉め確認前の出発合図'); return; }
+      if (S.phase !== 'CLOSED') return;
+      sndBuzzer();
+      if (S.t < st().depT - 1) deduct('early', 10, `早発（定刻の${Math.round(st().depT - S.t)}秒前に合図）`);
+      S.phase = 'READY'; S.readyAt = S.t + 1.5;
+      log('出発合図'); setMsg('出発合図。運転士が応答…');
+      break;
+    }
+    case 'X': {
+      if (S.emerg && !S.emerg.done){
+        S.emerg.done = true; S.haltUntil = S.t + 5; sndAlarm();
+        log('非常ブレーキで停止（適切）', 'ok'); setMsg('非常停止。安全確認後、運転再開します。', 'ok');
+      } else if (S.phase === 'MOVING'){
+        deduct('needlessEB', 10, '不要な非常ブレーキ'); S.haltUntil = S.t + 4;
+      }
+      break;
+    }
+  }
+}
+
+/* ===== 更新 ===== */
+function update(dt){
+  const cruise = S.phase === 'MOVING' && S.motionT > ACCEL_T && S.motionT < S.segDur - 42 && !S.emerg;
+  const k = (S.ff && cruise) ? 5 : 1;
+  const sdt = dt * k;
+  S.t += sdt;
+
+  if (S.phase === 'MOVING'){
+    const halted = S.t < S.haltUntil;
+    if (!halted) S.motionT += sdt;
+    const e = S.motionT, D = S.segDur;
+    S.speed = halted ? 0 : e < ACCEL_T ? VMAX*e/ACCEL_T : e > D - DECEL_T ? Math.max(0, VMAX*(D-e)/DECEL_T) : VMAX;
+    S.tunnelOff = (S.tunnelOff + S.speed*sdt*3) % 120;
+    // 発車直後の異常
+    if (S.emergPlan && !S.emerg && e >= S.emergPlan){
+      S.emerg = { start: S.t, deadline: S.t + 3, done: false };
+      setMsg('🚨 ホームで乗客が転倒！列車に接触のおそれ', 'ng'); sndAlarm();
+    }
+    if (S.emerg && !S.emerg.done && S.t > S.emerg.deadline){
+      S.emerg.done = true; deduct('missEB', 15, '異常時に非常ブレーキを扱わなかった');
+    }
+    if (S.emerg && S.emerg.done && S.t > S.haltUntil + 1 && S.t > S.emerg.start + 4) S.emerg = null;
+    if (inApproach() && !S.announced && !S.flags.has('annHint@'+S.i)){ S.flags.add('annHint@'+S.i); setMsg(`まもなく${next().name}。到着放送を（A）`); }
+    if (e >= D) arrive();
+  }
+
+  if (S.phase === 'ARRIVED' && S.t >= S.okAt){
+    S.phase = 'STOPPED';
+    setMsg(`停止位置よし。${st().side==='L'?'左':'右'}側の扉を開扉。`);
+  }
+
+  // 発車ベル
+  if (S.phase === 'OPEN' && st().depT && !S.bellStart && S.t >= st().depT - BELL_BEFORE){
+    S.bellStart = S.t; sndBell(); log('発車ベル');
+  }
+
+  // 扉
+  const speedDoor = sdt / 2.2;
+  const floor = S.trapped ? 0.15 : 0;
+  if (S.doors < S.doorTarget) S.doors = Math.min(S.doorTarget, S.doors + speedDoor);
+  if (S.doors > Math.max(S.doorTarget, floor)) S.doors = Math.max(Math.max(S.doorTarget, floor), S.doors - speedDoor);
+  if (S.phase === 'CLOSING' && S.doors <= 0 && !S.trapped){
+    S.phase = 'CLOSED'; setMsg('車側灯 消灯。発車時刻を確認して出発合図（B）。');
+  }
+
+  // 乗降
+  if (S.doors > 0.8 && S.phase === 'OPEN'){
+    S.boardAcc += sdt;
+    while (S.boardAcc > 0.6){ S.boardAcc -= 0.6; S.queues = S.queues.map(q => Math.max(0, q - 1)); }
+  }
+
+  // 駆け込み
+  const r = S.runner;
+  if (r && st().depT){
+    if (r.state === 'wait' && S.t >= r.start){ r.state = 'run'; r.arrive = S.t + 3.5; }
+    if (r.state === 'run' && S.t >= r.arrive){
+      if (S.doors > 0.5 && S.phase === 'OPEN'){ r.state = 'boarding'; r.boardT = S.t + 1.2; }
+      else if (S.phase === 'CLOSING' && S.doors > 0.15){ S.trapped = true; r.state = 'trapped'; setMsg('🚨 駆け込み乗車で挟まり！再開閉（R）', 'ng'); log('挟まり発生', 'ng'); }
+      else { r.state = 'left'; log('駆け込み客は乗れず（扉は閉まっていた）'); S.runner = null; }
+    }
+    if (r.state === 'boarding'){
+      if (S.phase === 'CLOSING' && S.doors > 0.15){ S.trapped = true; r.state = 'trapped'; setMsg('🚨 乗車中の客が挟まった！再開閉（R）', 'ng'); log('挟まり発生', 'ng'); }
+      else if (S.t >= r.boardT){ S.runner = null; log('駆け込み客が乗車'); }
+    }
+    if (r.state === 'trapped' && !S.trapped && S.doors > 0.6){ r.state = 'boarding'; r.boardT = S.t + 1; }
+  }
+
+  if (S.phase === 'READY' && S.t >= S.readyAt) depart();
+  if (S.finishAt && S.t >= S.finishAt) finish();
+}
+
+/* ===== 描画 ===== */
+const cv = $('cv'), ctx = cv.getContext('2d');
+function fitCanvas(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W*dpr; cv.height = H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+fitCanvas();
+const ease = x => x < 0 ? 0 : x > 1 ? 1 : x*x*(3-2*x);
+
+function platformOffset(){
+  if (S.phase === 'MOVING'){
+    const e = S.motionT, D = S.segDur;
+    if (e < ACCEL_T) return -ease(e/ACCEL_T) * (W + 200);
+    if (e > D - DECEL_T) return (1 - ease((e - (D - DECEL_T))/DECEL_T)) * (W + 200);
+    return null;
+  }
+  return 0;
+}
+
+function draw(){
+  ctx.fillStyle = '#07090c'; ctx.fillRect(0,0,W,H);
+  const px = platformOffset();
+  const s = S.phase === 'MOVING' && S.motionT > S.segDur/2 ? next() : st();
+  const top = s && s.side === 'L';
+
+  // トンネル壁・照明
+  ctx.strokeStyle = '#1b2029'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0,150); ctx.lineTo(W,150); ctx.moveTo(0,270); ctx.lineTo(W,270); ctx.stroke();
+  ctx.fillStyle = '#3a3420';
+  for (let x = -S.tunnelOff; x < W; x += 120){ ctx.fillRect(x, 120, 30, 4); ctx.fillRect(x+60, 296, 30, 4); }
+  // レール
+  ctx.strokeStyle = '#2a2f38'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(0,TRAIN_Y+8); ctx.lineTo(W,TRAIN_Y+8); ctx.moveTo(0,TRAIN_Y+TRAIN_H-8); ctx.lineTo(W,TRAIN_Y+TRAIN_H-8); ctx.stroke();
+
+  // ホーム
+  if (px !== null && s){
+    const pw = CARS*(CAR_W+GAP) + 80, x = X0 - 40 + px;
+    const py = top ? 20 : 280, ph = 120;
+    ctx.fillStyle = '#3a3f47'; ctx.fillRect(x, py, pw, ph);
+    ctx.fillStyle = '#d8b92a';
+    ctx.fillRect(x, top ? py+ph-14 : py+8, pw, 5);
+    // 駅名標
+    ctx.fillStyle = '#f2f2f2'; ctx.fillRect(x + pw/2 - 90, top ? py+12 : py+ph-46, 180, 34);
+    ctx.fillStyle = '#111'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`${s.name}  ${s.code}`, x + pw/2, top ? py+36 : py+ph-22);
+    // ホームドア
+    const edge = top ? py+ph : py;
+    ctx.fillStyle = '#c9ced6';
+    const open = (px === 0) ? S.doors : 0;
+    let last = x;
+    DOORS.forEach(dx => {
+      const half = 14*open + 1, cx = dx + px;
+      ctx.fillRect(last, edge-3, Math.max(0, cx-half-last), 6); last = cx + half;
+    });
+    ctx.fillRect(last, edge-3, x+pw-last, 6);
+    // 待っている乗客
+    if (px === 0){
+      S.queues.forEach((q, n) => {
+        for (let j = 0; j < q; j++){
+          const cx = DOORS[n] + (j%2 ? 6 : -6), cy = top ? edge - 16 - Math.floor(j/2)*12 : edge + 16 + Math.floor(j/2)*12;
+          ctx.fillStyle = '#8fb3ff'; ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 7); ctx.fill();
+        }
+      });
+    }
+    // 駆け込み客
+    const r = S.runner;
+    if (r && (r.state === 'run' || r.state === 'boarding' || r.state === 'trapped') && px === 0){
+      const target = DOORS[r.door];
+      let rx = target, ry = top ? edge-14 : edge+14;
+      if (r.state === 'run'){ const p = 1 - Math.max(0, (r.arrive - S.t)/3.5); rx = target - 220*(1-p); ry = top ? edge-60+46*p : edge+60-46*p; }
+      ctx.fillStyle = r.state === 'trapped' ? '#ff4d4f' : '#ffd166';
+      ctx.beginPath(); ctx.arc(rx, ry, 6, 0, 7); ctx.fill();
+      if (r.state === 'trapped' && Math.floor(S.t*4)%2){ ctx.strokeStyle = '#ff4d4f'; ctx.lineWidth = 3; ctx.strokeRect(target-18, TRAIN_Y-8, 36, TRAIN_H+16); }
+    }
+  }
+
+  // 車両
+  for (let c = 0; c < CARS; c++){
+    const x = X0 + c*(CAR_W+GAP);
+    ctx.fillStyle = '#c7ccd2'; ctx.fillRect(x, TRAIN_Y, CAR_W, TRAIN_H);
+    ctx.fillStyle = '#8b939c'; ctx.fillRect(x+4, TRAIN_Y+10, CAR_W-8, TRAIN_H-20);
+    ctx.fillStyle = '#5f6b75'; ctx.fillRect(x, TRAIN_Y+2, CAR_W, 4); ctx.fillRect(x, TRAIN_Y+TRAIN_H-6, CAR_W, 4);
+    ctx.fillStyle = '#22272e'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`${c+1}号車`, x + CAR_W/2, TRAIN_Y + TRAIN_H/2 + 4);
+    // 車側灯
+    const lit = S.doors > 0.01 && px === 0;
+    ctx.fillStyle = lit ? '#ff8c1a' : '#3a2a1a';
+    ctx.beginPath(); ctx.arc(x + CAR_W - 8, top ? TRAIN_Y - 6 : TRAIN_Y + TRAIN_H + 6, 4, 0, 7); ctx.fill();
+  }
+  // 扉
+  DOORS.forEach(dx => {
+    const open = (px === 0) ? S.doors : 0;
+    [true,false].forEach(isTop => {
+      const y = isTop ? TRAIN_Y : TRAIN_Y + TRAIN_H - 3;
+      const o = (isTop === top) ? open : 0;
+      ctx.fillStyle = '#4b535c'; ctx.fillRect(dx-12, y, 24, 3);
+      if (o > 0){ ctx.fillStyle = '#ffe9a8'; ctx.fillRect(dx-11*o, y, 22*o, 3); }
+    });
+  });
+  // 車掌・方向
+  ctx.fillStyle = '#ffd166'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('▲車掌', X0 + 2, TRAIN_Y + TRAIN_H + 24);
+  ctx.fillStyle = '#9aa4b2'; ctx.textAlign = 'right';
+  ctx.fillText(`${DATA.dest}方面 →`, W - 16, TRAIN_Y + TRAIN_H + 24);
+
+  // 非常表示
+  if (S.emerg && !S.emerg.done && Math.floor(S.t*4)%2){
+    ctx.fillStyle = 'rgba(255,77,79,.85)'; ctx.fillRect(W/2-200, 30, 400, 44);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('ホームで異常発生！', W/2, 59);
+  }
+}
+
+/* ===== HUD ===== */
+function hud(){
+  $('hTime').textContent = fmt(S.t);
+  if (S.phase === 'MOVING'){ $('hStaLabel').textContent = `次は（定刻 ${next().arr}）`; $('hSta').textContent = next().name; }
+  else { $('hStaLabel').textContent = st().dep ? `停車中（発 ${st().dep}）` : '停車中（終点）'; $('hSta').textContent = st().name; }
+  $('hSpeed').textContent = `${Math.round(S.speed)} km/h`;
+  let delay = 0;
+  if (S.phase === 'MOVING') delay = (S.t - st().depT) - S.motionT;
+  else if (st().depT && S.t > st().depT) delay = S.t - st().depT;
+  delay = Math.round(delay);
+  $('hDelay').textContent = delay > 0 ? `+${delay}秒` : '±0秒';
+  $('hDelay').style.color = delay >= 10 ? 'var(--ng)' : '';
+  $('hScore').textContent = S.score;
+  const atSta = S.phase !== 'MOVING';
+  $('lStop').className = 'lamp' + (atSta && S.phase !== 'ARRIVED' ? ' on' : '');
+  $('lSide').className = 'lamp' + (S.doors > 0.01 ? ' warn' : (atSta ? ' on' : ''));
+  $('lSide').textContent = S.doors > 0.01 ? '車側灯 点灯' : '車側灯 消灯';
+  $('lBell').className = 'lamp' + (S.bellStart && S.t < S.bellStart + BELL_LEN ? ' warn' : '');
+  $('lDep').className = 'lamp' + (atSta && st().depT && S.t >= st().depT ? ' on' : '');
+  $('lEmg').className = 'lamp' + (S.emerg && !S.emerg.done ? ' ng' : '');
+}
+
+/* ===== 結果 ===== */
+function finish(){
+  S.phase = 'FINISHED'; S.finishAt = null;
+  const rank = S.score >= 95 ? 'S' : S.score >= 85 ? 'A' : S.score >= 70 ? 'B' : 'C';
+  const ded = S.deductions.length ? S.deductions.map(d => `<tr><td>${d.sta}：${d.text}</td><td>-${d.pts}</td></tr>`).join('') : '<tr><td>減点なし</td><td>-</td></tr>';
+  const dl = S.delays.map(d => `<tr><td>${d.sta} 発車</td><td>${d.delay}秒</td></tr>`).join('');
+  $('resultCard').innerHTML = `
+    <h2>乗務終了</h2>
+    <div class="rank">${rank} <span style="font-size:24px">${S.score}点</span></div>
+    <p>列車番号 ${DATA.trainNo}（${DATA.dest}行き）／ ${DATA.stations[0].name} → ${st().name}</p>
+    <h3>減点</h3><table>${ded}</table>
+    <h3>発車時の遅れ</h3><table>${dl}</table>
+    <button class="main" onclick="location.reload()" style="width:100%;margin-top:10px">もう一度乗務する</button>`;
+  $('result').classList.remove('hidden');
+  window.lastResult = { trainNo: DATA.trainNo, score: S.score, rank, deductions: S.deductions, delays: S.delays };
+}
+
+/* ===== 開始・ループ ===== */
+function start(){
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  $('start').classList.add('hidden');
+  S.i = 0; S.t = st().depT - 28; S.phase = 'OPEN'; S.doors = 1; S.doorTarget = 1; S.okAt = S.t - 10; S.openedAt = S.t;
+  setupQueues();
+  S.runner = { door: Math.floor(Math.random()*DOORS.length), start: st().depT - 6, state: 'wait', boardT: 0 };
+  log(`${st().name}で乗務開始`);
+  setMsg('中目黒で乗降中。案内放送（A）は任意。発車ベル後、乗降が終わったら戸閉め（S）。');
+  last = performance.now(); requestAnimationFrame(loop);
+}
+let last = 0;
+function loop(now){
+  const dt = Math.min(0.1, (now - last)/1000); last = now;
+  if (S.phase !== 'FINISHED') update(dt);
+  draw(); hud();
+  requestAnimationFrame(loop);
+}
+
+$('go').onclick = start;
+['A','Q','E','S','R','B','X'].forEach(k => $('b'+k).addEventListener('click', () => cmd(k)));
+const ffBtn = $('bF');
+['pointerdown'].forEach(ev => ffBtn.addEventListener(ev, () => S.ff = true));
+['pointerup','pointerleave','pointercancel'].forEach(ev => ffBtn.addEventListener(ev, () => S.ff = false));
+window.addEventListener('keydown', e => {
+  const k = e.key.toUpperCase();
+  if (k === 'F'){ S.ff = true; return; }
+  if (e.repeat) return;
+  if ('AQESRBX'.includes(k) && k.length === 1) cmd(k);
+});
+window.addEventListener('keyup', e => { if (e.key.toUpperCase() === 'F') S.ff = false; });
+draw();
+</script>
+</body>
+</html>
